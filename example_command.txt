@@ -1,0 +1,11 @@
+curl --location 'https://api-sandbox.y.uno/v1/customers' \
+--header 'accept: application/json' \
+--header 'charset: utf-8' \
+--header 'content-type: application/json' \
+--header 'private-secret-key: gAAAAABof9s4Sb' \
+--header 'public-api-key: sandbox_gAAAAABof9s' \
+--data '
+{
+  "merchant_customer_id": "<id>"
+}
+'
