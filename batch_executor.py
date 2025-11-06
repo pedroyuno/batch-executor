@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 class BatchExecutor:
     """Handles batch execution of commands with ID replacement."""
     
-    def __init__(self, command_file: str, csv_file: str, delay_ms: int = 1000):
+    def __init__(self, command_file: str, csv_file: str, delay_ms: int = 1000, verify_return: bool = False):
         """
         Initialize the batch executor.
         
@@ -41,10 +41,12 @@ class BatchExecutor:
             command_file: Path to file containing the command template
             csv_file: Path to CSV file containing IDs
             delay_ms: Delay between command executions in milliseconds (default: 1000)
+            verify_return: If True, stop execution on HTTP error response codes (4xx, 5xx)
         """
         self.command_file = command_file
         self.csv_file = csv_file
         self.delay_ms = delay_ms
+        self.verify_return = verify_return
         
     def read_command_template(self) -> str:
         """Read the command template from file."""
@@ -179,6 +181,33 @@ class BatchExecutor:
         # If no empty line found, return the original stdout
         return stdout
     
+    def is_valid_http_code(self, http_code: Optional[str]) -> bool:
+        """
+        Check if HTTP response code is valid (2xx) or an error (4xx, 5xx).
+        
+        Args:
+            http_code: HTTP response code as string (e.g., "200", "404", "500")
+            
+        Returns:
+            True if code is 2xx (success), False if 4xx or 5xx (error), None if code is None
+        """
+        if http_code is None:
+            return None
+        
+        try:
+            code = int(http_code)
+            # 2xx codes are success
+            if 200 <= code < 300:
+                return True
+            # 4xx and 5xx codes are errors
+            elif 400 <= code < 600:
+                return False
+            # Other codes (1xx, 3xx) are considered valid for now
+            else:
+                return True
+        except (ValueError, TypeError):
+            return None
+    
     def run_batch_execution(self, dry_run: bool = False) -> None:
         """
         Execute the command for each ID in the CSV file.
@@ -229,6 +258,21 @@ class BatchExecutor:
             # Extract response body (without headers) for curl commands
             response_body = self.extract_response_body(command, stdout, stderr)
             
+            # Verify HTTP response code if verify_return is enabled
+            if self.verify_return and http_code:
+                is_valid = self.is_valid_http_code(http_code)
+                if is_valid is False:
+                    # HTTP error code detected (4xx, 5xx), stop execution
+                    logger.error(f"✗ HTTP Error Response Code: {http_code} for ID {id_value}")
+                    logger.error(f"Stopping batch execution due to HTTP error response code")
+                    if response_body:
+                        logger.error(f"Response: {response_body}")
+                    failed_executions += 1
+                    break  # Stop execution
+                elif is_valid is None:
+                    # HTTP code couldn't be validated, continue but warn
+                    logger.warning(f"Could not validate HTTP response code: {http_code}")
+            
             if exit_code == 0:
                 logger.info(f"✓ Success for ID {id_value}")
                 if http_code:
@@ -276,6 +320,8 @@ Examples:
   python batch_executor.py command.txt ids.csv --verbose
   python batch_executor.py command.txt ids.csv --delay 2000
   python batch_executor.py command.txt ids.csv --delay 500 --verbose
+  python batch_executor.py command.txt ids.csv --verify-return
+  python batch_executor.py command.txt ids.csv --verify-return --verbose
         """
     )
     
@@ -287,6 +333,8 @@ Examples:
                        help='Enable verbose logging')
     parser.add_argument('--delay', type=int, default=1000,
                        help='Delay between command executions in milliseconds (default: 1000)')
+    parser.add_argument('--verify-return', action='store_true',
+                       help='Stop execution when HTTP error response codes (4xx, 5xx) are received')
     
     args = parser.parse_args()
     
@@ -305,7 +353,12 @@ Examples:
     
     try:
         # Create and run batch executor
-        executor = BatchExecutor(args.command_file, args.csv_file, delay_ms=args.delay)
+        executor = BatchExecutor(
+            args.command_file, 
+            args.csv_file, 
+            delay_ms=args.delay,
+            verify_return=args.verify_return
+        )
         executor.run_batch_execution(dry_run=args.dry_run)
     except Exception as e:
         logger.error(f"Batch execution failed: {e}")

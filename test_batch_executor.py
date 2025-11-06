@@ -61,6 +61,45 @@ class TestBatchExecutor(unittest.TestCase):
         self.assertEqual(executor.csv_file, self.csv_file)
         self.assertEqual(executor.delay_ms, 2000)
     
+    def test_init_with_verify_return(self):
+        """Test BatchExecutor initialization with verify_return flag."""
+        executor = BatchExecutor(self.command_file, self.csv_file, verify_return=True)
+        self.assertEqual(executor.verify_return, True)
+    
+    def test_is_valid_http_code_success(self):
+        """Test HTTP code validation for success codes (2xx)."""
+        executor = BatchExecutor(self.command_file, self.csv_file)
+        self.assertTrue(executor.is_valid_http_code("200"))
+        self.assertTrue(executor.is_valid_http_code("201"))
+        self.assertTrue(executor.is_valid_http_code("204"))
+        self.assertTrue(executor.is_valid_http_code("299"))
+    
+    def test_is_valid_http_code_error(self):
+        """Test HTTP code validation for error codes (4xx, 5xx)."""
+        executor = BatchExecutor(self.command_file, self.csv_file)
+        self.assertFalse(executor.is_valid_http_code("400"))
+        self.assertFalse(executor.is_valid_http_code("404"))
+        self.assertFalse(executor.is_valid_http_code("500"))
+        self.assertFalse(executor.is_valid_http_code("503"))
+    
+    def test_is_valid_http_code_other(self):
+        """Test HTTP code validation for other codes (1xx, 3xx)."""
+        executor = BatchExecutor(self.command_file, self.csv_file)
+        self.assertTrue(executor.is_valid_http_code("100"))
+        self.assertTrue(executor.is_valid_http_code("301"))
+        self.assertTrue(executor.is_valid_http_code("302"))
+    
+    def test_is_valid_http_code_none(self):
+        """Test HTTP code validation with None."""
+        executor = BatchExecutor(self.command_file, self.csv_file)
+        self.assertIsNone(executor.is_valid_http_code(None))
+    
+    def test_is_valid_http_code_invalid(self):
+        """Test HTTP code validation with invalid input."""
+        executor = BatchExecutor(self.command_file, self.csv_file)
+        self.assertIsNone(executor.is_valid_http_code("invalid"))
+        self.assertIsNone(executor.is_valid_http_code(""))
+    
     def test_read_command_template_success(self):
         """Test reading command template successfully."""
         executor = BatchExecutor(self.command_file, self.csv_file)
@@ -300,6 +339,46 @@ class TestBatchExecutor(unittest.TestCase):
             # Verify sleep was called with correct delay (500ms = 0.5 seconds)
             for call in mock_sleep.call_args_list:
                 self.assertEqual(call[0][0], 0.5)
+    
+    @patch('batch_executor.BatchExecutor.execute_command')
+    def test_run_batch_execution_stop_on_http_error(self, mock_execute):
+        """Test batch execution stops on HTTP error code when verify_return is enabled."""
+        # First call succeeds (200), second fails (500), third should not be called
+        mock_execute.side_effect = [
+            (0, 'HTTP/2 200 OK\n\n{"status": "ok"}', ''),
+            (0, 'HTTP/2 500 Internal Server Error\n\n{"error": "server error"}', ''),
+            (0, 'HTTP/2 200 OK\n\n{"status": "ok"}', '')
+        ]
+        
+        # Create a command file with curl command for the test
+        curl_command_file = os.path.join(self.temp_dir, 'curl_command.txt')
+        with open(curl_command_file, 'w') as f:
+            f.write('curl -i https://example.com/api/<id>')
+        
+        executor = BatchExecutor(curl_command_file, self.csv_file, verify_return=True)
+        
+        with patch('batch_executor.logger') as mock_logger:
+            executor.run_batch_execution()
+            
+            # Should only execute 2 commands (stops after the 500 error)
+            self.assertEqual(mock_execute.call_count, 2)
+            
+            # Verify error logging was called
+            mock_logger.error.assert_called()
+    
+    @patch('batch_executor.BatchExecutor.execute_command')
+    def test_run_batch_execution_continue_on_http_success(self, mock_execute):
+        """Test batch execution continues on HTTP success codes when verify_return is enabled."""
+        # All calls succeed with 2xx codes
+        mock_execute.return_value = (0, 'HTTP/2 200 OK\n\n{"status": "ok"}', '')
+        
+        executor = BatchExecutor(self.command_file, self.csv_file, verify_return=True)
+        
+        with patch('batch_executor.logger') as mock_logger:
+            executor.run_batch_execution()
+            
+            # Should execute all 3 commands
+            self.assertEqual(mock_execute.call_count, 3)
 
 
 class TestMainFunction(unittest.TestCase):
@@ -349,8 +428,34 @@ class TestMainFunction(unittest.TestCase):
         
         with patch('sys.exit') as mock_exit:
             main()
-            # Verify BatchExecutor was created with delay_ms=2000
-            mock_executor_class.assert_called_once_with('command.txt', 'ids.csv', delay_ms=2000)
+            # Verify BatchExecutor was created with delay_ms=2000 and verify_return=False (default)
+            mock_executor_class.assert_called_once_with(
+                'command.txt', 
+                'ids.csv', 
+                delay_ms=2000,
+                verify_return=False
+            )
+            mock_executor.run_batch_execution.assert_called_once_with(dry_run=False)
+            mock_exit.assert_not_called()
+    
+    @patch('sys.argv', ['batch_executor.py', 'command.txt', 'ids.csv', '--verify-return'])
+    @patch('batch_executor.BatchExecutor')
+    @patch('os.path.exists')
+    def test_main_with_verify_return(self, mock_exists, mock_executor_class):
+        """Test main function with verify-return parameter."""
+        mock_exists.return_value = True
+        mock_executor = MagicMock()
+        mock_executor_class.return_value = mock_executor
+        
+        with patch('sys.exit') as mock_exit:
+            main()
+            # Verify BatchExecutor was created with verify_return=True
+            mock_executor_class.assert_called_once_with(
+                'command.txt', 
+                'ids.csv', 
+                delay_ms=1000,
+                verify_return=True
+            )
             mock_executor.run_batch_execution.assert_called_once_with(dry_run=False)
             mock_exit.assert_not_called()
     
