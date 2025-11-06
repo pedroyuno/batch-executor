@@ -112,6 +112,73 @@ class BatchExecutor:
             logger.error(f"Error executing command: {e}")
             return -1, "", str(e)
     
+    def extract_http_response_code(self, command: str, stdout: str, stderr: str) -> Optional[str]:
+        """
+        Extract HTTP response code from curl command output.
+        
+        Args:
+            command: The executed command
+            stdout: Standard output from the command
+            stderr: Standard error from the command
+            
+        Returns:
+            HTTP response code as string, or None if not found
+        """
+        # Check if this is a curl command
+        if not command.strip().startswith('curl'):
+            return None
+        
+        # Look for HTTP response codes in stderr (curl writes response codes to stderr)
+        import re
+        
+        # Pattern to match HTTP response codes (e.g., "HTTP/1.1 200 OK", "HTTP/2 404", "HTTP/2 503")
+        http_pattern = r'HTTP.*?(\d{3})'
+        
+        # Search in stderr first (where curl typically writes response codes)
+        match = re.search(http_pattern, stderr)
+        if match:
+            return match.group(1)
+        
+        # Also search in stdout in case curl is configured differently
+        match = re.search(http_pattern, stdout)
+        if match:
+            return match.group(1)
+        
+        return None
+    
+    def extract_response_body(self, command: str, stdout: str, stderr: str) -> str:
+        """
+        Extract response body from curl command output, removing HTTP headers.
+        
+        Args:
+            command: The executed command
+            stdout: Standard output from the command
+            stderr: Standard error from the command
+            
+        Returns:
+            Response body without HTTP headers
+        """
+        # Check if this is a curl command
+        if not command.strip().startswith('curl'):
+            return stdout
+        
+        # Look for the first empty line after HTTP headers
+        lines = stdout.split('\n')
+        body_start = 0
+        
+        for i, line in enumerate(lines):
+            # Look for empty line that indicates end of headers
+            if line.strip() == '':
+                body_start = i + 1
+                break
+        
+        # Return everything after the empty line (response body)
+        if body_start < len(lines):
+            return '\n'.join(lines[body_start:]).strip()
+        
+        # If no empty line found, return the original stdout
+        return stdout
+    
     def run_batch_execution(self, dry_run: bool = False) -> None:
         """
         Execute the command for each ID in the CSV file.
@@ -156,17 +223,33 @@ class BatchExecutor:
             # Execute command
             exit_code, stdout, stderr = self.execute_command(command)
             
+            # Extract HTTP response code for curl commands
+            http_code = self.extract_http_response_code(command, stdout, stderr)
+            
+            # Extract response body (without headers) for curl commands
+            response_body = self.extract_response_body(command, stdout, stderr)
+            
             if exit_code == 0:
                 logger.info(f"✓ Success for ID {id_value}")
-                if stdout:
-                    logger.info(f"Response: {stdout}")
+                if http_code:
+                    logger.info(f"HTTP Response Code: {http_code}")
+                if response_body:
+                    logger.info(f"Response: {response_body}")
+                # In verbose mode, also show full response with headers
+                if logger.isEnabledFor(logging.DEBUG) and stdout and stdout != response_body:
+                    logger.debug(f"Full Response: {stdout}")
                 successful_executions += 1
             else:
                 logger.error(f"✗ Failed for ID {id_value} (exit code: {exit_code})")
+                if http_code:
+                    logger.error(f"HTTP Response Code: {http_code}")
                 if stderr:
                     logger.error(f"Error: {stderr}")
-                if stdout:
-                    logger.info(f"Response: {stdout}")
+                if response_body:
+                    logger.info(f"Response: {response_body}")
+                # In verbose mode, also show full response with headers
+                if logger.isEnabledFor(logging.DEBUG) and stdout and stdout != response_body:
+                    logger.debug(f"Full Response: {stdout}")
                 failed_executions += 1
             
             # Add delay between executions (except for the last one)

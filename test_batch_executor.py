@@ -123,6 +123,46 @@ class TestBatchExecutor(unittest.TestCase):
         result = executor.replace_id_in_command(command_template, 'test123')
         self.assertEqual(result, 'echo "ID: test123 and also test123"')
     
+    def test_extract_http_response_code_curl_success(self):
+        """Test extracting HTTP response code from successful curl command."""
+        executor = BatchExecutor(self.command_file, self.csv_file)
+        command = 'curl -s https://example.com'
+        stdout = '{"status": "ok"}'
+        stderr = 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+        
+        http_code = executor.extract_http_response_code(command, stdout, stderr)
+        self.assertEqual(http_code, '200')
+    
+    def test_extract_http_response_code_curl_error(self):
+        """Test extracting HTTP response code from failed curl command."""
+        executor = BatchExecutor(self.command_file, self.csv_file)
+        command = 'curl -s https://example.com/notfound'
+        stdout = ''
+        stderr = 'HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\n'
+        
+        http_code = executor.extract_http_response_code(command, stdout, stderr)
+        self.assertEqual(http_code, '404')
+    
+    def test_extract_http_response_code_non_curl(self):
+        """Test that HTTP response code extraction returns None for non-curl commands."""
+        executor = BatchExecutor(self.command_file, self.csv_file)
+        command = 'echo "Hello World"'
+        stdout = 'Hello World'
+        stderr = ''
+        
+        http_code = executor.extract_http_response_code(command, stdout, stderr)
+        self.assertIsNone(http_code)
+    
+    def test_extract_http_response_code_no_match(self):
+        """Test HTTP response code extraction when no HTTP code is found."""
+        executor = BatchExecutor(self.command_file, self.csv_file)
+        command = 'curl -s https://example.com'
+        stdout = 'Some output'
+        stderr = 'Some error without HTTP code'
+        
+        http_code = executor.extract_http_response_code(command, stdout, stderr)
+        self.assertIsNone(http_code)
+    
     @patch('subprocess.run')
     def test_execute_command_success(self, mock_run):
         """Test successful command execution."""
